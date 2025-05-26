@@ -1,21 +1,19 @@
 <?php
-session_start();
 include "../db.php";
 
-$teacher_id = $_SESSION['user_id'] ?? '';
-$teacher_subject = $_SESSION['subject'] ?? '';
-
 $records_per_page = 20;
-$page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $offset = ($page - 1) * $records_per_page;
 
 $search = '';
+$avg_activity = 0;
+$avg_test = 0;
+$final_grade = 0;
+$total_pages = 1;
 $success_message = "";
 $result = false;
 
-// ----- New: Get selected term (for summary box), default to 'prelim'
-$selected_term = isset($_GET['grade_term']) ? strtolower(trim($_GET['grade_term'])) : 'prelim';
-
+// Handle AJAX update for inline editing (excel-like)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_update'])) {
     $student_id = $_POST['student_id'];
     $student_name = $_POST['student_name'];
@@ -23,7 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_update'])) {
     $score = $_POST['score'];
     $week = $_POST['week'];
     $term = $_POST['term'];
-    $subject = $teacher_subject;
+
     $orig_id = $_POST['orig_id'];
     $orig_task = $_POST['orig_task'];
     $orig_week = $_POST['orig_week'];
@@ -31,12 +29,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_update'])) {
 
     $update = $conn->prepare(
         "UPDATE grades
-        SET student_id = ?, student_name = ?, task_name = ?, score = ?, week = ?, term = ?, subject=?
+        SET student_id = ?, student_name = ?, task_name = ?, score = ?, week = ?, term = ?
         WHERE student_id = ? AND task_name = ? AND week = ? AND term = ?"
     );
+    // There are 10 parameters: 6 for SET, 4 for WHERE
     $update->bind_param(
-        "sssisssssss",
-        $student_id, $student_name, $task_name, $score, $week, $term, $subject,
+        "sssisssiss",
+        $student_id, $student_name, $task_name, $score, $week, $term,
         $orig_id, $orig_task, $orig_week, $orig_term
     );
     if ($update->execute()) {
@@ -47,6 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_update'])) {
     exit;
 }
 
+// Add Grade
 if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['ajax_update'])) {
     $student_id   = $_POST["student_id"];
     $student_name = $_POST["student_name"];
@@ -54,13 +54,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['ajax_update'])) {
     $score        = $_POST["score"];
     $week         = $_POST["week"];
     $term         = $_POST["term"];
-    $subject      = $teacher_subject;
     $date         = date("Y-m-d");
 
-    $sql = "INSERT INTO grades (student_id, student_name, task_name, score, week, term, subject, date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    $sql = "INSERT INTO grades (student_id, student_name, task_name, score, week, term, date)
+            VALUES (?, ?, ?, ?, ?, ?, ?)";
     $stmt = $conn->prepare($sql);
-    $stmt->bind_param("ssssssss", $student_id, $student_name, $task_name, $score, $week, $term, $subject, $date);
+    $stmt->bind_param("ssssiss", $student_id, $student_name, $task_name, $score, $week, $term, $date);
 
     if ($stmt->execute()) {
         $success_message = "Grade submitted successfully!";
@@ -80,7 +79,7 @@ if (isset($_GET['id']) && $_GET['id'] !== '') {
 
 if ($search !== '') {
     $like = "%" . $search . "%";
-    $stmt = $conn->prepare("SELECT subject, student_id, student_name, task_name, score, week, term, date 
+    $stmt = $conn->prepare("SELECT student_id, student_name, task_name, score, week, term, date 
                             FROM grades 
                             WHERE student_id = ? OR student_name LIKE ? 
                             ORDER BY date DESC 
@@ -93,54 +92,33 @@ if ($search !== '') {
     $total_stmt->bind_param("ss", $search, $like);
     $total_stmt->execute();
     $total_rows = $total_stmt->get_result()->fetch_row()[0];
-    $total_pages = max(1, ceil($total_rows / $records_per_page));
+    $total_pages = ceil($total_rows / $records_per_page);
     $total_stmt->close();
 
-    // ----------- New: Prelim summary calculation for summary box -------------
-    $prelim_test = 0;
-    $prelim_activity_sum = 0;
-    $prelim_activity_count = 0;
-
-    $stmt_total = $conn->prepare("SELECT task_name, score, term FROM grades WHERE student_id = ? OR student_name LIKE ?");
+    $stmt_total = $conn->prepare("SELECT task_name, score FROM grades WHERE student_id = ? OR student_name LIKE ?");
     $stmt_total->bind_param("ss", $search, $like);
     $stmt_total->execute();
     $grades_result = $stmt_total->get_result();
 
-    while ($grade = $grades_result->fetch_assoc()) {
-        $task = strtolower($grade['task_name']);
-        $term = strtolower($grade['term']);
-        $score = (float)$grade['score'];
-
-        if ($term === 'prelim') {
-            if (strpos($task, 'test') !== false) {
-                $prelim_test = $score; // If multiple, you may wish to average or take latest
-            }
-            if (strpos($task, 'activity') !== false) {
-                $prelim_activity_sum += $score;
-                $prelim_activity_count++;
-            }
+    $total_activity = $count_activity = $total_test = $count_test = 0;
+    while ($grade_avg = $grades_result->fetch_assoc()) {
+        $task = strtolower(trim($grade_avg['task_name']));
+        $score = (float)$grade_avg['score'];
+        if (strpos($task, 'activity') !== false) {
+            $total_activity += $score;
+            $count_activity++;
+        } elseif (strpos($task, 'test') !== false) {
+            $total_test += $score;
+            $count_test++;
         }
     }
     $stmt_total->close();
 
-    $prelim_activity_avg = $prelim_activity_count ? $prelim_activity_sum / $prelim_activity_count : 0;
-
-    // ----------- New: Dynamic label/weight for summary box -------------
-    if ($selected_term === 'prelim') {
-        $test_label = "(30%) Prelim Test";
-        $activity_label = "(30%) Activity";
-    } elseif ($selected_term === 'midterm') {
-        $test_label = "(30%) Prelim Test";
-        $activity_label = "(30%) Activity";
-    } elseif ($selected_term === 'finals') {
-        $test_label = "(40%) Prelim Test";
-        $activity_label = "(30%) Activity";
-    } else {
-        $test_label = "(30%) Prelim Test";
-        $activity_label = "(30%) Activity";
-    }
+    $avg_activity = $count_activity ? $total_activity / $count_activity : 0;
+    $avg_test = $count_test ? $total_test / $count_test : 0;
+    $final_grade = round(($avg_activity * 0.3) + ($avg_test * 0.3), 2);
 } else {
-    $stmt = $conn->prepare("SELECT subject, student_id, student_name, task_name, score, week, term, date 
+    $stmt = $conn->prepare("SELECT student_id, student_name, task_name, score, week, term, date 
                             FROM grades 
                             ORDER BY date DESC 
                             LIMIT ?, ?");
@@ -151,14 +129,9 @@ if ($search !== '') {
     $total_stmt = $conn->prepare("SELECT COUNT(*) FROM grades");
     $total_stmt->execute();
     $total_rows = $total_stmt->get_result()->fetch_row()[0];
-    $total_pages = max(1, ceil($total_rows / $records_per_page));
+    $total_pages = ceil($total_rows / $records_per_page);
     $total_stmt->close();
     $stmt->close();
-
-    // No summary if not searching.
-    $prelim_test = 0;
-    $prelim_activity_avg = 0;
-    $test_label = $activity_label = '';
 }
 ?>
 <!DOCTYPE html>
@@ -227,27 +200,15 @@ if ($search !== '') {
             text-align: center;
             margin: 20px;
         }
-        .pagination-btn {
-            display: inline-block;
-            margin: 0 2px;
-            padding: 8px 16px;
-            background: #007bff;
-            color: #fff;
-            border-radius: 4px;
+        .divider a {
+            padding: 10px 20px;
             text-decoration: none;
-            border: none;
-            font-size: 15px;
-            transition: background 0.2s;
+            border: 1px solid #333;
+            margin: 0 5px;
         }
-        .pagination-btn:disabled, .pagination-btn.disabled {
-            background: #aaa;
-            cursor: not-allowed;
-            pointer-events: none;
-            color: #eee;
-        }
-        .pagination-info {
-            margin: 0 10px;
-            font-size: 15px;
+        .divider a:hover {
+            background-color: #007bff;
+            color: white;
         }
         .save-btn {
             background: #28a745;
@@ -276,15 +237,14 @@ if ($search !== '') {
         if (!row) return;
         var tds = row.querySelectorAll('.edit-cell');
         var data = {};
+        data['student_id'] = tds[0].querySelector('input').value;
+        data['student_name'] = tds[1].querySelector('input').value;
+        data['task_name'] = tds[2].querySelector('input').value;
+        data['score'] = tds[3].querySelector('input').value;
+        data['week'] = tds[4].querySelector('input').value;
+        data['term'] = tds[5].querySelector('select').value;
 
-        data['subject'] = <?= json_encode($teacher_subject) ?>;
-        data['student_id'] = tds[1].querySelector('input').value;
-        data['student_name'] = tds[2].querySelector('input').value;
-        data['task_name'] = tds[3].querySelector('input').value;
-        data['score'] = tds[4].querySelector('input').value;
-        data['week'] = tds[5].querySelector('input').value;
-        data['term'] = tds[6].querySelector('select').value;
-
+        // Originals
         data['orig_id'] = row.getAttribute('data-orig-id');
         data['orig_task'] = row.getAttribute('data-orig-task');
         data['orig_week'] = row.getAttribute('data-orig-week');
@@ -297,6 +257,7 @@ if ($search !== '') {
         xhr.onload = function() {
             if (xhr.responseText.trim() === "success") {
                 alert('Grade updated successfully!');
+                // update the data-orig-* to new values
                 row.setAttribute('data-orig-id', data['student_id']);
                 row.setAttribute('data-orig-task', data['task_name']);
                 row.setAttribute('data-orig-week', data['week']);
@@ -321,20 +282,14 @@ if ($search !== '') {
         <a href="/grading-system/teacher/section.php">Section</a>
         <a href="/grading-system/teacher/announcement.php">Announcement</a>
         <br><br><br><br><br><br><br><br><br><br><br><br>
-        <br><br><br><br><br><br><br><br><br><br><br><br>
-        <br><br><br>
+    <br><br><br><br><br><br><br><br><br><br><br><br>
+    <br><br><br>
         <a href="/grading-system/login.php?logout=1">Logout</a>
     </div>
     <div class="main-content">
         <div class="box">
             <form method="GET" action="">
                 <input type="text" name="id" placeholder="Search by ID or Name" value="<?= htmlspecialchars($search) ?>">
-                <!-- New: grade term filter dropdown -->
-                <select name="grade_term">
-                    <option value="prelim" <?= $selected_term=='prelim'?'selected':''; ?>>Prelim</option>
-                    <option value="midterm" <?= $selected_term=='midterm'?'selected':''; ?>>Midterm</option>
-                    <option value="finals" <?= $selected_term=='finals'?'selected':''; ?>>Finals</option>
-                </select>
                 <button type="submit">Search</button>
             </form>
             <h2>Grades</h2>
@@ -415,30 +370,25 @@ if ($search !== '') {
                     </tr>
                 <?php endwhile; ?>
             <?php else: ?>
-                <tr><td colspan="9" style="text-align:center;">No records found.</td></tr>
+                <tr><td colspan="8" style="text-align:center;">No records found.</td></tr>
             <?php endif; ?>
         </table>
         <br><br>
         <?php if ($search !== ''): ?>
             <div class="summary-box">
-                <h3>Grade Summary (<?= htmlspecialchars(ucfirst($selected_term)) ?>)</h3>
-                <p><strong><?= $test_label ?>:</strong> <?= number_format($prelim_test, 2) ?></p>
-                <p><strong><?= $activity_label ?>:</strong> <?= number_format($prelim_activity_avg, 2) ?></p>
+                <h3>Grade Summary</h3>
+                <p><strong>Activity Average:</strong> <?= number_format($avg_activity, 2) ?></p>
+                <p><strong>Test Average:</strong> <?= number_format($avg_test, 2) ?></p>
+                <p><strong>Total Grade (30% Activity + 30% Test):</strong> <?= number_format($final_grade, 2) ?></p>
             </div>
         <?php endif; ?>
-        <div class="divider" style="text-align:center;margin-top:20px;">
-            <?php
-                $search_param = $search !== '' ? '&id=' . urlencode($search) : '';
-            ?>
-            <a class="pagination-btn<?= $page <= 1 ? ' disabled' : '' ?>" 
-               href="<?= $page <= 1 ? '#' : '?id=' . urlencode($search) . '&page=' . ($page - 1) . '&grade_term=' . urlencode($selected_term) ?>"
-               <?= $page <= 1 ? 'tabindex="-1" aria-disabled="true"' : '' ?>>Previous</a>
-
-            <span class="pagination-info">Page <?= $page ?> of <?= $total_pages ?></span>
-
-            <a class="pagination-btn<?= $page >= $total_pages ? ' disabled' : '' ?>"
-               href="<?= $page >= $total_pages ? '#' : '?id=' . urlencode($search) . '&page=' . ($page + 1) . '&grade_term=' . urlencode($selected_term) ?>"
-               <?= $page >= $total_pages ? 'tabindex="-1" aria-disabled="true"' : '' ?>>Next</a>
+        <div class="divider">
+            <?php if ($page > 1): ?>
+                <a href="?id=<?= urlencode($search) ?>&page=<?= $page - 1 ?>">Previous</a>
+            <?php endif; ?>
+            <?php if ($page < $total_pages): ?>
+                <a href="?id=<?= urlencode($search) ?>&page=<?= $page + 1 ?>">Next</a>
+            <?php endif; ?>
         </div>
     </div>
 </body>
