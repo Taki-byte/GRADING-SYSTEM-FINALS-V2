@@ -1,0 +1,16 @@
+CREATE TABLE IF NOT EXISTS users (
+  id int(11) NOT NULL AUTO_INCREMENT,
+  user_id varchar(50) NOT NULL,
+  surname varchar(100) NOT NULL,
+  first_name varchar(100) NOT NULL,
+  middle_name varchar(100) DEFAULT NULL,
+  password varchar(255) NOT NULL,
+  role enum('student','teacher') NOT NULL,
+  section varchar(50) DEFAULT NULL,
+  profile_pic varchar(255) DEFAULT NULL,
+  subject varchar(100) DEFAULT NULL,
+  UNIQUE KEY user_id (user_id),
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+ALTER TABLE users AUTO_INCREMENT = 1;
